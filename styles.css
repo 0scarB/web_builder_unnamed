@@ -1,0 +1,23 @@
+html {
+    font-family: Seravek, 'Gill Sans Nova', Ubuntu, Calibri, 'DejaVu Sans', source-sans-pro, sans-serif;
+    font-weight: normal;
+}
+
+body {
+    max-width: 600px;
+    margin: 4em auto;
+}
+
+img {
+    max-width: 100%;
+    min-width: 100%;
+}
+
+body > *[contenteditable=""] {
+    outline: 2px solid #00F;
+}
+
+#edit-controls, #edit-controls button {
+    font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+    font-weight: normal;
+}
