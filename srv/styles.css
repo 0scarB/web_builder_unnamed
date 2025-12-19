@@ -1,11 +1,19 @@
 html {
     font-family: Seravek, 'Gill Sans Nova', Ubuntu, Calibri, 'DejaVu Sans', source-sans-pro, sans-serif;
     font-weight: normal;
+
+    margin: 0;
+    padding: 0;
 }
 
 body {
     max-width: 600px;
-    margin: 4em auto;
+    margin: 0 auto;
+    padding: 0;
+}
+
+main {
+    margin: 4em;
 }
 
 img {
@@ -13,11 +21,67 @@ img {
     min-width: 100%;
 }
 
-body > *[contenteditable=""] {
+main h1[contenteditable=""],
+main p[contenteditable=""],
+main img[contenteditable=""],
+main *[contenteditable=""]:focus {
     outline: 2px solid #00F;
+    border: none;
+}
+main h1:hover, main p:hover, main img:hover {
+    outline: 1px solid #333;
+    border: none;
 }
 
 #edit-controls, #edit-controls button {
     font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
     font-weight: normal;
+}
+
+#file-tree {
+    width: 200px;
+    height: 100vh;
+    border-right: 1px solid #333;
+}
+#file-tree > ul:first-of-type {
+    padding: 0;
+    margin: 0;
+    border-left: none;
+}
+#file-tree ul {
+    padding-left: 1rem;
+    border-left: 1px solid #333;
+}
+#file-tree li::marker {
+    content: "";
+}
+#file-tree li > div {
+    width: 100%;
+    display: grid;
+    grid-template-rows: auto auto auto;
+    grid-template-columns: auto auto auto auto auto auto;
+}
+#file-tree li > div > input {
+    grid-column: 1 / 7;
+    line-height: 1.5rem;
+    margin: 0;
+    padding: 0;
+    background-color: transparent;
+    outline: none;
+    border: none;
+}
+#file-tree li > div:hover > input {
+    outline: 1px solid #333;
+}
+#file-tree li > div > input:focus {
+    outline: 2px solid #00F;
+}
+#file-tree li > div > button {
+    display: none;
+}
+#file-tree li > div > button.edit-page {
+    grid-column: 1 / 7;
+}
+#file-tree li > div:hover > button, #file-tree li > div > input:focus ~ button {
+    display: initial;
 }
