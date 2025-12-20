@@ -18,6 +18,9 @@
 #ifndef ASSERT_IN_PATH_PARSING
 #   define ASSERT_IN_PATH_PARSING 0
 #endif
+#ifndef DEBUG_HTTP_REQUEST_PARSING
+#   define DEBUG_HTTP_REQUEST_PARSING 0
+#endif
 #ifndef DEBUG_MIME_TYPES
 #   define DEBUG_MIME_TYPES 0
 #endif
@@ -41,20 +44,23 @@ int info_log_fd = 1, error_log_fd = 2;
 
 #define log(to_error_log, category, fmt, ...) \
     dprintf(to_error_log ? error_log_fd : info_log_fd, \
-            category":"__FILE__":"expanded_macro_arg_to_str(__LINE__)":%s: " \
+            category""__FILE__":"expanded_macro_arg_to_str(__LINE__)":%s: " \
             fmt"\n", \
             __func__, ##__VA_ARGS__)
 
-#define info(fmt, ...) log(0, "INFO", fmt, ##__VA_ARGS__)
-#define warn(fmt, ...) log(0, "WARNING", fmt, ##__VA_ARGS__)
-#define error(fmt, ...) log(1, "ERROR", fmt, ##__VA_ARGS__)
+#define info(fmt, ...) log(0, "INFO:", fmt, ##__VA_ARGS__)
+#define warn(fmt, ...) log(0, "WARNING:", fmt, ##__VA_ARGS__)
+#define error(fmt, ...) log(1, "ERROR:", fmt, ##__VA_ARGS__)
 #define debug(what, fmt, ...) \
-    (DEBUG_##what ? log(0, "DEBUG_"#what, fmt, ##__VA_ARGS__) : 0)
+    (DEBUG_##what ? log(0, "DEBUG_"#what":", fmt, ##__VA_ARGS__) : 0)
+
+#define not_implemented(...) \
+    (log(1, "", "NOT IMPLEMENTED! " __VA_ARGS__) && (_exit(errno), -1))
 
 #define assert(toggle_suffix, expr, ...) \
     (ASSERT_##toggle_suffix \
         ? (expr ? 1 \
-            : log(0, "ASSERT_"#toggle_suffix, \
+            : log(0, "ASSERT_"#toggle_suffix":", \
                   "assert(..., "#expr", ...) failed! " __VA_ARGS__)) \
         : 0)
 
@@ -85,36 +91,43 @@ long syscall_ret;
 //
 // Parsing File-Paths from HTTP-Requests
 //
-#define NOT_IN_SERVER_DIR   (-3)
-#define HTTP_METHOD_NOT_GET (-22)
-#define PATH_TRUNCATED      (-36)
-_Static_assert(NOT_IN_SERVER_DIR   == -ESRCH, "");
-_Static_assert(HTTP_METHOD_NOT_GET == -EINVAL, "");
-_Static_assert(PATH_TRUNCATED      == -ENAMETOOLONG, "");
+#define GET 1
+#define PUT 2
 
-int parse_and_normalize_file_path_from_http_get_request(
-    char* http_request, int http_request_len
-) {
-    http_request[http_request_len] = '\0';
-    char *rp = http_request, *fp = http_request;
+int parse_http_request_method(char** request, int* request_len) {
+    char* r = *request; int l = *request_len;
+    if (l >= 4 && r[0] == 'G' && r[1] == 'E' && r[2] == 'T' && r[3] == ' ') {
+        *request += 4; *request_len -= 4;
+        return GET;
+    }
+    if (l >= 4 && r[0] == 'P' && r[1] == 'U' && r[2] == 'T' && r[3] == ' ') {
+        *request += 4; *request_len -= 4;
+        return PUT;
+    }
+    return -1;
+}
 
-    int ret = HTTP_METHOD_NOT_GET;
-    if (http_request_len < 4) { goto do_return; }
-    if (*rp++ != 'G' || *rp++ != 'E' || *rp++ != 'T' || *rp++ != ' ')
-        { goto do_return; }
+#define NOT_IN_SERVER_DIR (-3)
+#define PATH_TRUNCATED    (-36)
+_Static_assert(NOT_IN_SERVER_DIR == -ESRCH, "");
+_Static_assert(PATH_TRUNCATED    == -ENAMETOOLONG, "");
 
+int parse_http_request_path(char* path_dst, char** request, int* request_len) {
+    int ret = -1;
+
+    char *rp = *request, *fp = path_dst;
     *fp++ = '/';
 
-    while (rp - http_request < http_request_len) {
+    while (rp - *request < *request_len) {
         char* component = rp;
-        for (char c; rp - http_request < http_request_len &&
+        for (char c; rp - *request < *request_len &&
             (c = *rp) && (
                 ('a' <= c && c <= 'z') ||
                 ('A' <= c && c <= 'Z') ||
                 ('0' <= c && c <= '9') ||
                 (c == '_') || (c == '-') || (c == '.')
             ); ++rp);
-        if (rp - http_request >= http_request_len) {
+        if (rp - *request >= *request_len) {
             ret = PATH_TRUNCATED;
             goto do_return;
         }
@@ -137,9 +150,9 @@ int parse_and_normalize_file_path_from_http_get_request(
             assert(IN_PATH_PARSING, fp[-1] == '/');
             // On '../', delete the previous path component
             --fp;
-            while (fp > http_request && fp[-1] != '/') { --fp; }
-            if (fp <= http_request) {
-                fp = http_request;
+            while (fp > *request && fp[-1] != '/') { --fp; }
+            if (fp <= *request) {
+                fp = *request;
                 ret = NOT_IN_SERVER_DIR;
                 goto do_return;
             }
@@ -153,9 +166,87 @@ int parse_and_normalize_file_path_from_http_get_request(
         if (!component_ends_in_slash) { break; }
     }
     if (fp[-1] == '/') { --fp; }
-    ret = fp - http_request;
+    ret = fp - path_dst;
 do_return:
+    *request_len -= rp - *request;
+    *request      = rp;
     *fp = '\0';
+    return ret;
+}
+
+int parse_only_content_length_from_http_headers(char** request, int* request_len) {
+    char* r = *request; int l = *request_len;
+
+    // Find start of HTTP-request body
+    unsigned int sliding_window = 0;
+    unsigned int start_of_body_sliding_window_match =
+        (((unsigned int)'\r') << 24) |
+        (((unsigned int)'\n') << 16) |
+        (((unsigned int)'\r') <<  8) |
+        (((unsigned int)'\n') <<  0);
+    int body_offset = 0;
+    for (; body_offset < l &&
+            sliding_window != start_of_body_sliding_window_match
+         ;++body_offset
+    ) { sliding_window = sliding_window<<8 | (unsigned int)(r[body_offset]); }
+
+    int ret = -1;
+    if (body_offset < sizeof("Content-Length:")-1) { goto do_return; }
+
+    int i = sizeof("Content-Length")-1;
+    for (; i < body_offset && (
+            r[i-14] != 'C' || r[i-13] != 'o' && r[i-12] != 'n' ||
+            r[i-11] != 't' || r[i-10] != 'e' && r[i- 9] != 'n' ||
+            r[i- 8] != 't' || r[i- 7] != '-' && r[i- 6] != 'L' ||
+            r[i- 5] != 'e' || r[i- 4] != 'n' && r[i- 3] != 'g' ||
+            r[i- 2] != 't' || r[i- 1] != 'h')
+         ;++i);
+    if (i >= body_offset) { goto do_return; }
+
+    for (; i < body_offset && r[i] == ' ' || r[i] == '\t'; ++i);
+    if (i >= body_offset || r[i++] != ':') { goto do_return; }
+
+    for (; i < body_offset && r[i] == ' ' || r[i] == '\t'; ++i);
+    if (i >= body_offset) { goto do_return; }
+
+    ret = (int)(r[i++] - '0');
+    if (ret < 0 || 9 < ret) { ret = -1; goto do_return; }
+    for (char c; (c = r[i]) && '0' <= c && c <= '9'; ++i)
+        { ret = 10*ret + (int)(c - '0'); }
+do_return:
+    *request     += body_offset;
+    *request_len -= body_offset;
+    return ret;
+}
+
+int stat_file_path_or_extended_html_file_path(
+    struct stat* file_stat,
+    char* file_path, int* file_path_len
+) {
+    int ret = stat(file_path, file_stat);
+    int adjusted_len = *file_path_len;
+    if (!(file_stat->st_mode & S_IFREG)) {
+        if (ret != -1 && (file_stat->st_mode & S_IFDIR)) {
+            file_path[adjusted_len++] = '/';
+            file_path[adjusted_len++] = 'i';
+            file_path[adjusted_len++] = 'n';
+            file_path[adjusted_len++] = 'd';
+            file_path[adjusted_len++] = 'e';
+            file_path[adjusted_len++] = 'x';
+        }
+        file_path[adjusted_len++] = '.';
+        file_path[adjusted_len++] = 'h';
+        file_path[adjusted_len++] = 't';
+        file_path[adjusted_len++] = 'm';
+        file_path[adjusted_len++] = 'l';
+        file_path[adjusted_len++] = '\0';
+        ret = stat(file_path, file_stat);
+    }
+    if ((ret != -1) && (file_stat->st_mode & S_IFREG)) {
+        *file_path_len = adjusted_len;
+    } else {
+        file_path[*file_path_len] = '\0';
+    }
     return ret;
 }
 
@@ -180,7 +271,7 @@ enum mime_type DEFAULT_MIME_TYPE = TEXT_HTML;
 
 const char*const mime_type_strings[MIME_TYPES_COUNT] = {
     [MIME_TYPE_UNKNOWN] = "(unknown)",
-    [TEXT_HTML        ] = "text/html",
+    [TEXT_HTML        ] = "text/html;charset=UTF-8",
     [TEXT_JAVASCRIPT  ] = "text/javascript",
     [TEXT_CSS         ] = "text/css",
     [IMAGE_JPEG       ] = "image/jpeg",
@@ -236,13 +327,19 @@ enum mime_type get_mime_type_from_file_extension(
 // Main Web-Server Code
 //
 
-#define FD_OF_FILE_TO_BE_SENT                   0x0000FFFF
-#define SEND_HTTP_ERROR_RESPONSE_FORBIDDEN      0x000F0000
-#define SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND 0x00F00000
-#define SENDFILE                                0x0F000000
-#define FILE_SIZE                               0x00FFFFFF
-#define MIME_TYPE_MASK                          0xFF000000
-#define MIME_TYPE_SHIFT                             24
+#define FD_OF_FILE_TO_BE_SENT                          0x0000FFFF
+#define SEND_HTTP_ERROR_RESPONSE_FORBIDDEN             0x01000000
+#define SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND        0x02000000
+#define SEND_HTTP_ERROR_RESPONSE_INTERNAL_SERVER_ERROR 0x04000000
+#define SEND_HTTP_SUCCESS_RESPONSE_CREATED             0x08000000
+#define SENDFILE                                       0x10000000
+#define OVERWRITE_FILE_FROM_REQUEST                    0x20000000
+#define FILE_SIZE                                      0x00FFFFFF
+#define MIME_TYPE_MASK                                 0x7F000000
+_Static_assert(                     MIME_TYPES_COUNT < 0x7F,
+               "MIME_TYPE_MASK too few bits");
+#define MIME_TYPE_SHIFT                                    24
+#define NO_HTTP_CONTENT_LENGTH_HEADER                  0x7FFFFFFF
 
 // Configuration
 #define SERVE_DIR "srv"
@@ -305,77 +402,240 @@ int main(void) {
                 continue;
             }
 
-            // Receive HTTP-GET requests for static files on the file system
-            if (ready_events & POLLIN) {
+            int fd_state = fds_state[fd];
+
+            // Handle inital HTTP requests packets
+            if (!fd_state && (ready_events & POLLIN)) {
                 debug(POLL_EVENTS, "POLLIN on client socket %d.", fd);
 
-                int len = read(fd, scratch_buf, http_request_read_size);
+                // Read first chunk of HTTP-request
+                char* http_request     = scratch_buf;
+                int   http_request_len =
+                    read(fd, http_request, http_request_read_size);
 
-                int offset =
-                    parse_and_normalize_file_path_from_http_get_request(
-                        scratch_buf, len);
-                if (offset == NOT_IN_SERVER_DIR) {
+                // Parse the HTTP-request method
+                int http_request_method =
+                    parse_http_request_method(&http_request, &http_request_len);
+                if (http_request_method == -1) {
+                    shutdown(fd, SHUT_RD);
+
+                    info("Invalid HTTP-method!");
+                    pollfds  [fd].events = POLLOUT;
+                    fds_state[fd]        = SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
+                    continue;
+                }
+
+                // Parse the path in the HTTP-request
+                int file_path_len =
+                    parse_http_request_path(scratch_buf,
+                                            &http_request, &http_request_len);
+                if (file_path_len >= 0) {
+                    file_path_len += sizeof(SERVE_DIR)-1;
+                }
+
+                if (file_path_len == NOT_IN_SERVER_DIR) {
+                    shutdown(fd, SHUT_RD);
+
                     warn("Possibly malicious "
                          "attempted to access file "
                          "outside of server directory "
                          "file_path='%s'!\n", file_path);
-                    fds_state[fd] = SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
-                } else if (offset == HTTP_METHOD_NOT_GET) {
-                    info("HTTP-method not 'GET'.");
-                    fds_state[fd] = SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
-                    break;
-                } else if (offset == PATH_TRUNCATED) {
+                    pollfds  [fd].events = POLLOUT;
+                    fds_state[fd]        = SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
+                    continue;
+                } else if (file_path_len == PATH_TRUNCATED) {
+                    shutdown(fd, SHUT_RD);
+
                     warn("Large HTTP-GET path '%s...' "
                          "not fully parsed to completion: "
                          "cannot service request!", file_path);
-                    fds_state[fd] = SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND;
-                } else {
-                    int stat_ret = stat(file_path, &file_stat);
-                    int orig_offset = offset;
-                    if (!(file_stat.st_mode & S_IFREG)) {
-                        if (stat_ret != -1 && (file_stat.st_mode & S_IFDIR)) {
-                            scratch_buf[offset++] = '/';
-                            scratch_buf[offset++] = 'i';
-                            scratch_buf[offset++] = 'n';
-                            scratch_buf[offset++] = 'd';
-                            scratch_buf[offset++] = 'e';
-                            scratch_buf[offset++] = 'x';
-                        }
-                        scratch_buf[offset++] = '.';
-                        scratch_buf[offset++] = 'h';
-                        scratch_buf[offset++] = 't';
-                        scratch_buf[offset++] = 'm';
-                        scratch_buf[offset++] = 'l';
-                        scratch_buf[offset++] = '\0';
-                        stat_ret = stat(file_path, &file_stat);
-                    }
-                    if (stat_ret == -1 || !(file_stat.st_mode & S_IFREG)) {
-                        file_path[orig_offset] = '\0';
+                    pollfds  [fd].events = POLLOUT;
+                    fds_state[fd]        =
+                        SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND;
+                    continue;
+                } else if (http_request_method == GET) {
+                    shutdown(fd, SHUT_RD);
+
+                    int stat_ret =
+                        stat_file_path_or_extended_html_file_path(
+                            &file_stat, file_path, &file_path_len);
+                    if (stat_ret == -1) {
                         info("File '%s' not found.", file_path);
-                        fds_state[fd] = SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND;
-                    } else {
-                        int file_fd = open(file_path, O_RDONLY, 0400);
-                        debug(IO, "Opened file '%s'. File descriptor is %d.",
-                                   file_path, file_fd);
-
-                        enum mime_type mime_type =
-                            get_mime_type_from_file_extension(
-                                scratch_buf, offset);
-                        debug(MIME_TYPES,
-                              "Determined file '%.*s' to have MIME-type '%s'"
-                              "(with index %d in mime_type_strings)",
-                              len, scratch_buf,
-                              mime_type_strings[mime_type], (int)mime_type);
-
-                        info("Serving file '%s'.", file_path);
-                        fds_state[fd] = file_fd;
-                        fds_state[file_fd] =
-                            (file_stat.st_size & FILE_SIZE) |
-                            ((unsigned int)mime_type << MIME_TYPE_SHIFT);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND;
+                        continue;
                     }
+
+                    int file_fd = open(file_path, O_RDONLY, 0400);
+                    debug(IO, "Opened file '%s'. File descriptor is %d.",
+                               file_path, file_fd);
+
+                    enum mime_type mime_type =
+                        get_mime_type_from_file_extension(
+                            file_path, file_path_len);
+                    debug(MIME_TYPES,
+                          "Determined file '%.*s' to have MIME-type '%s'"
+                          "(with index %d in mime_type_strings)",
+                          file_path_len, file_path,
+                          mime_type_strings[mime_type], (int)mime_type);
+                    info("Serving file '%s'.", file_path);
+
+                    fds_state[fd] = file_fd;
+                    fds_state[file_fd] =
+                        (file_stat.st_size & FILE_SIZE) |
+                        ((unsigned int)mime_type << MIME_TYPE_SHIFT);
+                    pollfds[fd].events = POLLOUT;
+                    continue;
+                } else if (http_request_method == PUT) {
+                    int http_content_length =
+                        parse_only_content_length_from_http_headers(
+                            &http_request, &http_request_len);
+                    debug(HTTP_REQUEST_PARSING, "http_content_length = %d",
+                                                 http_content_length);
+
+                    int stat_ret =
+                        stat_file_path_or_extended_html_file_path(
+                            &file_stat, file_path, &file_path_len);
+                    if (stat_ret == -1) {
+                        shutdown(fd, SHUT_RD);
+
+                        info("File '%s' not found.", file_path);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND;
+                        continue;
+                    }
+
+                    if (http_content_length == -1) {
+                        warn("PUT HTTP-request to save to file '%s' "
+                             "does not contain Content-Length header!",
+                             file_path);
+                    }
+
+                    int file_fd = open(file_path, O_WRONLY|O_TRUNC, 0600);
+                    debug(IO, "Opened file '%s'. File descriptor is %d.",
+                               file_path, file_fd);
+                    int len = write(file_fd, http_request, http_request_len);
+                    if (len != http_request_len) {
+                        close(file_fd);
+                        debug(IO, "Closed file with descriptor %d.", file_fd);
+
+                        if (errno == EACCES) {
+                            warn("Access denied to file with descriptor %d.",
+                                 file_fd);
+                            pollfds  [fd].events = POLLOUT;
+                            fds_state[fd]        =
+                                SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
+                        } else {
+                            error_errno("'write' to file with descriptor %d "
+                                        "failed unexpectedly", file_fd);
+                            pollfds  [fd].events = POLLOUT;
+                            fds_state[fd]        =
+                                SEND_HTTP_ERROR_RESPONSE_INTERNAL_SERVER_ERROR;
+                        }
+                        continue;
+                    }
+
+                    info("Saving edited file '%s'.", file_path);
+
+                    debug(IO, "'write' Wrote chunk of size %d "
+                              "to file with descriptor %d.", len, file_fd);
+                    if ((http_content_length == -1 &&
+                            http_request + len <
+                            scratch_buf  + http_request_read_size
+                        ) || len >= http_content_length
+                    ) {
+                        close(file_fd);
+                        debug(IO, "Closed file with descriptor %d.", file_fd);
+                        debug(IO, "'write' Completed overwriting "
+                                  "file with descriptor %d "
+                                  "from content received on client socket %d.",
+                                  file_fd, fd);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_SUCCESS_RESPONSE_CREATED;
+                        continue;
+                    }
+
+                    fds_state[fd] = file_fd;
+                    if (http_content_length == -1) {
+                        fds_state[file_fd] = NO_HTTP_CONTENT_LENGTH_HEADER;
+                    } else {
+                        fds_state[file_fd] =
+                            (http_content_length - len) & FILE_SIZE;
+                    }
+                    continue;
                 }
-                shutdown(fd, SHUT_RD);
-                pollfds[fd].events = POLLOUT;
+            }
+
+            // Handle subsequent HTTP request packets, after the first
+            if (fd_state && (ready_events & POLLIN)) {
+                debug(POLL_EVENTS, "POLLIN on client socket %d.", fd);
+
+                int          file_fd       = fd_state;
+                unsigned int file_fd_state = fds_state[file_fd];
+                int unknown_content_len =
+                    file_fd_state == NO_HTTP_CONTENT_LENGTH_HEADER;
+
+                int read_size;
+                if (file_fd_state == NO_HTTP_CONTENT_LENGTH_HEADER) {
+                    read_size = 1024;
+                } else {
+                    read_size = fds_state[file_fd] & FILE_SIZE;
+                }
+
+                int len = copy_file_range(fd, 0, file_fd, 0, read_size, 0);
+                if (len == -1) {
+                    close(file_fd);
+                    debug(IO, "Closed file with descriptor %d.", file_fd);
+
+                    if (errno == EACCES) {
+                        warn("Access denied to file with descriptor %d.",
+                             file_fd);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
+                    } else {
+                        error_errno("'copy_file_range' from client socket %d "
+                                    "to file with descriptor %d "
+                                    "failed unexpectedly", fd, file_fd);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_ERROR_RESPONSE_INTERNAL_SERVER_ERROR;
+                    }
+                    continue;
+                }
+
+                debug(IO, "'copy_file_range' Wrote chunk of size %d "
+                          "to file with descriptor %d "
+                          "from client socket %d.", len, file_fd, fd);
+                if (len == 0 ||
+                    (!unknown_content_len && (len < read_size))
+                ) {
+                    if (len == 0 && !unknown_content_len) {
+                        warn("Client connection was closed before the number "
+                             "of bytes matching the value of the HTTP "
+                             "Content-Length header was received!");
+                        // TODO: We should backup files at the start of PUT
+                        //       requests, before we start overwriting them,
+                        //       and restore the file from the backup in
+                        //       situations such as these!
+                    }
+
+                    close(file_fd);
+                    debug(IO, "Closed file with descriptor %d.", file_fd);
+                    debug(IO, "'copy_file_range' Completed overwriting "
+                              "file with descriptor %d "
+                              "from content received on client socket %d.",
+                              file_fd, fd);
+                    pollfds  [fd].events = POLLOUT;
+                    fds_state[fd]        =
+                        SEND_HTTP_SUCCESS_RESPONSE_CREATED;
+                    continue;
+                }
+
+                if (!unknown_content_len) { fds_state[file_fd] -= len; }
                 continue;
             }
 
@@ -383,12 +643,17 @@ int main(void) {
             if (ready_events & POLLOUT) {
                 debug(POLL_EVENTS, "POLLOUT on client socket %d.", fd);
 
-                int fd_state = fds_state[fd];
                 if (fd_state & SEND_HTTP_ERROR_RESPONSE_FILE_NOT_FOUND) {
                     goto send_http_error_response_file_not_found;
                 }
                 if (fd_state & SEND_HTTP_ERROR_RESPONSE_FORBIDDEN) {
                     goto send_http_error_response_forbidden;
+                }
+                if (fd_state & SEND_HTTP_ERROR_RESPONSE_INTERNAL_SERVER_ERROR) {
+                    goto send_http_error_response_forbidden;
+                }
+                if (fd_state & SEND_HTTP_SUCCESS_RESPONSE_CREATED) {
+                    goto send_http_success_response_created;
                 }
 
                 int file_fd = fd_state & FD_OF_FILE_TO_BE_SENT;
@@ -414,14 +679,11 @@ int main(void) {
                               "from file with descriptor %d "
                               "to client socket %d.", len, file_fd, fd);
                     if (((fds_state[file_fd] -= len) & FILE_SIZE) <= 0) {
+                        close(file_fd);
                         debug(IO, "'sendfile' Completed sending full file "
                                   "from file with descriptor %d "
                                   "to client socket %d.", file_fd, fd);
-                        fds_state[fd] = 0;
-
-                        close(file_fd);
                         debug(IO, "Closed file with descriptor %d.", file_fd);
-
                         goto close_client_sock;
                     }
                     continue;
@@ -486,6 +748,19 @@ int main(void) {
             write(fd, response, sizeof(response));
             goto close_client_sock;
         }
+        send_http_success_response_created: {
+            const char response[] =
+                "HTTP/1.1 201 Created\r\n"
+                "Content-Type: text/html\r\n"
+                "Content-Length: 63\r\n"
+                "\r\n"
+                "<!DOCTYPE HTML>"
+                "<html><body>"
+                "SUCCESS: Created (201)"
+                "</body></html>";
+            write(fd, response, sizeof(response));
+            goto close_client_sock;
+        }
         close_client_sock:
             debug(CLIENT_CONNECTIONS,
                   "Closing client connection to socket %d", fd);
@@ -493,8 +768,9 @@ int main(void) {
             shutdown(fd, SHUT_WR);
             close(fd);
 
-            pollfds[fd].fd    ^= -1;
-            pollfds[fd].events = POLLIN;
+            fds_state[fd]        =  0;
+            pollfds  [fd].fd    ^= -1;
+            pollfds  [fd].events = POLLIN;
         }
     }
 }

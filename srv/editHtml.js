@@ -213,6 +213,36 @@ function ensureEditing() {
     return true;
 }
 
+var xmlSerializer = new XMLSerializer();
+/** @param {Event} event **/
+function handleSaveHtmlDocRequestReadyStateChange(event) {
+    /** @type {XMLHttpRequest} **/
+    var request = event.target;
+    if (request.readyState == XMLHttpRequest.DONE) {
+        console.log("DONE!");
+        console.log(event);
+    }
+}
+function sendSaveHtmlDocRequestToServer() {
+    editTargetEl.removeAttribute("contenteditable");
+
+    var tempHtmlDoc = document.implementation.createHTMLDocument();
+    var htmlElClone = tempHtmlDoc.importNode(document.documentElement, true);
+    tempHtmlDoc.removeChild(tempHtmlDoc.documentElement);
+    tempHtmlDoc.insertBefore(htmlElClone, null);
+    tempHtmlDoc.body.removeAttribute("style");
+    tempHtmlDoc.getElementById("file-tree"    ).remove();
+    tempHtmlDoc.getElementById("edit-controls").remove();
+
+    var request = new XMLHttpRequest();
+    request.addEventListener(
+        "readystatechange", handleSaveHtmlDocRequestReadyStateChange);
+    request.open("PUT", document.URL);
+    request.send(tempHtmlDoc);
+
+    editTargetEl.setAttribute("contenteditable", "");
+}
+
 /** @param {Event} event **/
 function handleClick(event) {
     if (!event.target) { return; }
@@ -239,14 +269,26 @@ function handleClick(event) {
         event.preventDefault();
         event.stopPropagation();
 
-        if (event.target === editToggleItalic)
-            { document.execCommand("italic"       , false, null); return; }
-        if (event.target === editToggleBold)
-            { document.execCommand("bold"         , false, null); return; }
-        if (event.target === editToggleUnderline)
-            { document.execCommand("underline"    , false, null); return; }
-        if (event.target === editToggleStrikethrough)
-            { document.execCommand("strikethrough", false, null); return; }
+        if (event.target === editToggleItalic) {
+            document.execCommand("italic", false, null);
+            sendSaveHtmlDocRequestToServer();
+            return;
+        }
+        if (event.target === editToggleBold) {
+            document.execCommand("bold", false, null);
+            sendSaveHtmlDocRequestToServer();
+            return;
+        }
+        if (event.target === editToggleUnderline) {
+            document.execCommand("underline", false, null);
+            sendSaveHtmlDocRequestToServer();
+            return;
+        }
+        if (event.target === editToggleStrikethrough) {
+            document.execCommand("strikethrough", false, null);
+            sendSaveHtmlDocRequestToServer();
+            return;
+        }
 
         if (event.target === editSwaptWithElBefore) {
             editTargetEl.removeAttribute("contenteditable");
@@ -254,6 +296,7 @@ function handleClick(event) {
             if (!elBefore) { return; }
             editTargetEl.parentNode.insertBefore(editTargetEl, elBefore);
             ensureEditing();
+            sendSaveHtmlDocRequestToServer();
             return;
         }
         if (event.target === editSwaptWithElAfter) {
@@ -265,6 +308,7 @@ function handleClick(event) {
             editTargetEl.parentNode
                 .insertBefore(editTargetEl, elAfter.nextElementSibling);
             ensureEditing();
+            sendSaveHtmlDocRequestToServer();
             return;
         }
         if (event.target === editDelete) {
@@ -274,6 +318,7 @@ function handleClick(event) {
             editTargetEl.parentNode.removeChild(editTargetEl);
             editTargetEl = elAfter || DUMMY_EL;
             ensureEditing();
+            sendSaveHtmlDocRequestToServer();
             return;
         }
 
@@ -287,6 +332,7 @@ function handleClick(event) {
             editTargetEl.insertBefore(document.createTextNode("Heading 1."), null);
             parentNode.insertBefore(editTargetEl, elAfter);
             ensureEditing();
+            sendSaveHtmlDocRequestToServer();
             return;
         }
         if (event.target === editAddParagraphAfter) {
@@ -299,6 +345,7 @@ function handleClick(event) {
             editTargetEl.insertBefore(document.createTextNode("Paragraph"), null);
             parentNode.insertBefore(editTargetEl, elAfter);
             ensureEditing();
+            sendSaveHtmlDocRequestToServer();
             return;
         }
         if (event.target === editAddImageAfter) {
@@ -366,6 +413,12 @@ function handleClick(event) {
     }
 }
 
+function handleInputEvent(event) {
+    if (event.target === editTargetEl) {
+        sendSaveHtmlDocRequestToServer();
+    }
+}
+
 function handleFileUpload() {
     var files = this.files;
     if (!files || !files.length) { return; }
@@ -388,11 +441,13 @@ function handleFileUpload() {
     }
     files.length = 0;
     ensureEditing();
+    sendSaveHtmlDocRequestToServer();
 }
 
 window.addEventListener("load"            , handleWindowLoad);
 window.addEventListener("DOMContentLoaded", handleWindowLoad);
-window.addEventListener("touchstart", handleClick);
-window.addEventListener("mousedown" , handleClick);
+window.addEventListener("touchstart"      , handleClick);
+window.addEventListener("mousedown"       , handleClick);
+window.addEventListener("input"           , handleInputEvent);
 fileUploadInputEl.addEventListener("change", handleFileUpload);
 
