@@ -1,10 +1,12 @@
+"use strict";
+
 var       TIMES_UTF16_CODE_POINT =  215;
 var  LEFT_ARROW_UTF16_CODE_POINT = 8592;
 var    UP_ARROW_UTF16_CODE_POINT = 8593;
 var RIGHT_ARROW_UTF16_CODE_POINT = 8594;
 var  DOWN_ARROW_UTF16_CODE_POINT = 8595;
 
-var DUMMY_EL = document.createElement("p");
+var DUMMY_EL  = document.createElement("p");
 /** @type {HTMLElement} **/
 let editTargetEl = DUMMY_EL;
 
@@ -35,15 +37,15 @@ editToggleStrikethrough
 editToggleStrikethrough.insertBefore(document.createTextNode("S"), null);
 editToggleStrikethrough.style.setProperty("text-decoration", "line-through");
 
-var editSwaptWithElBefore = document.createElement("button");
-editSwaptWithElBefore.setAttribute("title", "move up");
-editSwaptWithElBefore.insertBefore(
+var editSwapWithElBefore = document.createElement("button");
+editSwapWithElBefore.setAttribute("title", "move up");
+editSwapWithElBefore.insertBefore(
     document.createTextNode(
         String.fromCodePoint(UP_ARROW_UTF16_CODE_POINT)), null);
 
-var editSwaptWithElAfter = document.createElement("button");
-editSwaptWithElAfter.setAttribute("title", "move down");
-editSwaptWithElAfter.insertBefore(
+var editSwapWithElAfter = document.createElement("button");
+editSwapWithElAfter.setAttribute("title", "move down");
+editSwapWithElAfter.insertBefore(
     document.createTextNode(
         String.fromCodePoint(DOWN_ARROW_UTF16_CODE_POINT)), null);
 
@@ -73,8 +75,8 @@ editControls.insertBefore(editToggleItalic       , null);
 editControls.insertBefore(editToggleBold         , null);
 editControls.insertBefore(editToggleUnderline    , null);
 editControls.insertBefore(editToggleStrikethrough, null);
-editControls.insertBefore(editSwaptWithElBefore  , null);
-editControls.insertBefore(editSwaptWithElAfter   , null);
+editControls.insertBefore(editSwapWithElBefore  , null);
+editControls.insertBefore(editSwapWithElAfter   , null);
 editControls.insertBefore(editDelete             , null);
 editControls.insertBefore(editAddHeading1After   , null);
 editControls.insertBefore(editAddParagraphAfter  , null);
@@ -84,13 +86,15 @@ var fileUploadInputEl = document.createElement("input");
 fileUploadInputEl.style.setProperty("visibility", "hidden");
 fileUploadInputEl.setAttribute("type", "file");
 editControls.insertBefore(fileUploadInputEl, null);
-var xmlSerializer = new XMLSerializer();
 
 var fileTreeEl      = document.createElement("div");
 var fileTreeHeading = document.createElement("h2");
 fileTreeHeading.insertBefore(document.createTextNode("Files"), null);
 fileTreeEl     .insertBefore(fileTreeHeading, null);
 fileTreeEl.setAttribute("id", "file-tree");
+
+var tempHtmlDoc = document.implementation.createHTMLDocument();
+var request     = new XMLHttpRequest();
 
 /** @param   {string     } name
  *  @returns {HTMLElement} **/
@@ -167,13 +171,24 @@ function fileTreeAdd(parentEl, childName) {
     return childEl;
 }
 
+/** @param   {HTMLElement} el
+ *  @returns {HTMLElement|null} **/
+function nextElementSkipEditControls(el) {
+    var nextEl = el.nextElementSibling;
+    if (nextEl === editControls)
+        { nextEl = nextEl.nextElementSibling; }
+    return nextEl;
+}
+
 var mainEl = DUMMY_EL;
 
 var alreadyHandledWindowLoad = false;
 
 /** @param {Event} event **/
 function handleEvent(event) {
-    var ensureStillEditTargetAtEndOfFunc    = false;
+    /** @type {HTMLElement|null} **/
+    var prevEditTarget = editTargetEl;
+
     var sendRequestToSaveHTMLDocAtEndOfFunc = false;
 
     if ((event.type === "load" || event.type === "DOMContentLoaded") &&
@@ -183,19 +198,19 @@ function handleEvent(event) {
 
         alreadyHandledWindowLoad = true;
 
-        mainEl = document.body.firstElementChild;
-        document.body.style.setProperty("max-width", "800px");
-        document.body.insertBefore(fileTreeEl, mainEl);
-        document.body.style.setProperty("display", "flex");
-        document.body.style.setProperty("flex-direction", "row");
-
         fileTreeAdd(fileTreeEl, "foo");
         var barEl = fileTreeAdd(fileTreeEl, "bar");
         fileTreeAdd(barEl, "a");
         fileTreeAdd(barEl, "b");
         fileTreeAdd(fileTreeEl, "baz");
 
-        ensureStillEditTargetAtEndOfFunc = true;
+        mainEl = document.body.firstElementChild;
+        document.body.style.setProperty("max-width", "800px");
+        document.body.insertBefore(fileTreeEl, mainEl);
+        document.body.style.setProperty("display", "flex");
+        document.body.style.setProperty("flex-direction", "row");
+
+        editTargetEl = mainEl.firstElementChild;
     } else if (event.type === "touchstart" || event.type === "mousedown")
     handleClick: {
         if (!event.target) { break handleClick; }
@@ -203,10 +218,7 @@ function handleEvent(event) {
             event.target.nodeName === "P"  ||
             event.target.nodeName === "IMG"
         ) {
-            editTargetEl.removeAttribute("contenteditable");
             editTargetEl = event.target;
-
-            ensureStillEditTargetAtEndOfFunc = true;
             break handleClick;
         }
 
@@ -221,88 +233,72 @@ function handleEvent(event) {
 
             if (event.target === editToggleItalic) {
                 document.execCommand("italic", false, null);
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
             if (event.target === editToggleBold) {
                 document.execCommand("bold", false, null);
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
             if (event.target === editToggleUnderline) {
                 document.execCommand("underline", false, null);
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
             if (event.target === editToggleStrikethrough) {
                 document.execCommand("strikethrough", false, null);
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
 
-            if (event.target === editSwaptWithElBefore) {
-                editTargetEl.removeAttribute("contenteditable");
+            if (event.target === editSwapWithElBefore) {
                 var elBefore = editTargetEl.previousElementSibling;
-                if (!elBefore) { return; }
-                editTargetEl.parentNode.insertBefore(editTargetEl, elBefore);
-                ensureStillEditTargetAtEndOfFunc    = true;
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                if (elBefore === null) { break handleClick; }
+                editTargetEl.parentNode
+                    .insertBefore(
+                        elBefore,
+                        nextElementSkipEditControls(editTargetEl));
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
-            if (event.target === editSwaptWithElAfter) {
-                editTargetEl.removeAttribute("contenteditable");
-                var elAfter = editTargetEl.nextElementSibling;
-                if (elAfter === editControls)
-                    { elAfter = elAfter.nextElementSibling; }
-                if (!elAfter) { return; }
-                editTargetEl.parentNode
-                    .insertBefore(editTargetEl, elAfter.nextElementSibling);
-                ensureStillEditTargetAtEndOfFunc    = true;
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+            if (event.target === editSwapWithElAfter) {
+                var elAfter = nextElementSkipEditControls(editTargetEl);
+                if (elAfter === null) { break handleClick; }
+                editTargetEl.parentNode.insertBefore(elAfter, editTargetEl);
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
             if (event.target === editDelete) {
-                var elAfter = editTargetEl.nextElementSibling;
-                if (elAfter === editControls)
-                    { elAfter = elAfter.nextElementSibling; }
+                var elAfter = nextElementSkipEditControls(editTargetEl);
                 editTargetEl.parentNode.removeChild(editTargetEl);
-                editTargetEl = elAfter || DUMMY_EL;
-                ensureStillEditTargetAtEndOfFunc    = true;
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                editTargetEl = elAfter;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
 
             if (event.target === editAddHeading1After) {
-                editTargetEl.removeAttribute("contenteditable");
-                var elAfter = editTargetEl.nextElementSibling;
-                if (elAfter === editControls)
-                    { elAfter = elAfter.nextElementSibling; }
+                var elAfter = nextElementSkipEditControls(editTargetEl);
                 var parentNode = editTargetEl.parentNode;
-                editTargetEl = document.createElement("H1");
-                editTargetEl.insertBefore(document.createTextNode("Heading 1."), null);
+                editTargetEl = document.createElement("h1");
+                editTargetEl.insertBefore(
+                    document.createTextNode("Heading 1."), null);
                 parentNode.insertBefore(editTargetEl, elAfter);
-                ensureStillEditTargetAtEndOfFunc    = true;
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
             if (event.target === editAddParagraphAfter) {
-                editTargetEl.removeAttribute("contenteditable");
-                var elAfter = editTargetEl.nextElementSibling;
-                if (elAfter === editControls)
-                    { elAfter = elAfter.nextElementSibling; }
+                var elAfter = nextElementSkipEditControls(editTargetEl);
                 var parentNode = editTargetEl.parentNode;
-                editTargetEl = document.createElement("P");
-                editTargetEl.insertBefore(document.createTextNode("Paragraph"), null);
+                editTargetEl = document.createElement("p");
+                editTargetEl.insertBefore(
+                    document.createTextNode("Paragraph"), null);
                 parentNode.insertBefore(editTargetEl, elAfter);
-                ensureStillEditTargetAtEndOfFunc    = true;
-                sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+                sendRequestToSaveHTMLDocAtEndOfFunc = true;
                 break handleClick;
             }
             if (event.target === editAddImageAfter) {
-                editTargetEl.removeAttribute("contenteditable");
-                var elAfter = editTargetEl.nextElementSibling;
-                if (elAfter === editControls)
-                    { elAfter = elAfter.nextElementSibling; }
+                var elAfter = nextElementSkipEditControls(editTargetEl);
                 var parentNode = editTargetEl.parentNode;
                 fileUploadInputEl.setAttribute("accept", "image/*");
                 fileUploadInputEl.click();
@@ -321,22 +317,23 @@ function handleEvent(event) {
             // Swap with element before
             if (utf16Code === UP_ARROW_UTF16_CODE_POINT) {
                 var elBefore = fileTreeNodeEl.previousElementSibling;
-                fileTreeNodeEl.parentNode.insertBefore(fileTreeNodeEl, elBefore);
+                if (elBefore === null) { break handleClick; }
+                fileTreeNodeEl.parentNode
+                    .insertBefore(elBefore, fileTreeNodeEl.nextElementSibling);
             }
             // Swap with element after
             if (utf16Code === DOWN_ARROW_UTF16_CODE_POINT) {
                 var elAfter = fileTreeNodeEl.nextElementSibling;
-                if (!elAfter) { return; }
-                fileTreeNodeEl.parentNode
-                    .insertBefore(fileTreeNodeEl, elAfter.nextElementSibling);
+                if (elAfter === null) { break handleClick; }
+                fileTreeNodeEl.parentNode.insertBefore(elAfter, fileTreeNodeEl);
             }
             // Move after parent tree node element
             if (utf16Code == LEFT_ARROW_UTF16_CODE_POINT) {
                 /** @type {HTMLElement} **/
                 var parentTreeNodeEl = fileTreeNodeEl.parentNode;
-                if (parentTreeNodeEl === fileTreeEl) { return; }
+                if (parentTreeNodeEl === fileTreeEl) { break handleClick; }
                 parentTreeNodeEl = parentTreeNodeEl.parentNode;
-                if (parentTreeNodeEl === fileTreeEl) { return; }
+                if (parentTreeNodeEl === fileTreeEl) { break handleClick; }
                 parentTreeNodeEl.parentNode
                     .insertBefore(fileTreeNodeEl,
                                   parentTreeNodeEl.nextElementSibling);
@@ -344,8 +341,8 @@ function handleEvent(event) {
             // Make child of element before
             if (utf16Code == RIGHT_ARROW_UTF16_CODE_POINT) {
                 /** @type {HTMLElement} **/
-                var elBefore = fileTreeNodeEl.previousSibling;
-                if (!elBefore) { return; }
+                var elBefore = fileTreeNodeEl.previousElementSibling;
+                if (elBefore === null) { break handleClick; }
                 var listEl = fileTreeNodeEnsureSublistEl(elBefore);
                 listEl.insertBefore(fileTreeNodeEl, null);
             }
@@ -361,17 +358,14 @@ function handleEvent(event) {
             }
             break handleClick;
         }
-    } else if (event.type === "input" && event.target === editTargetEl) {
-        sendRequestToSaveHTMLDocAtEndOfFunc = true;;
-    } else if (event.type === "change" && event.target === fileUploadInputEl) {
-        var files = this.files;
-        if (!files || !files.length) { return; }
-        var elAfter = editTargetEl.nextElementSibling;
-        if (elAfter === editControls)
-            { elAfter = elAfter.nextElementSibling; }
+    } else if (event.type === "change" && event.target === fileUploadInputEl)
+    handleFileUpload: {
+        /** @type {FileList} **/
+        var files = event.target.files;
+        if (!files || !files.length) { break handleFileUpload; }
+        var elAfter = nextElementSkipEditControls(editTargetEl);
         var parentNode = editTargetEl.parentNode;
         for (var i = 0; i < files.length; ++i) {
-            /** @type {File} **/
             var file = files[i];
             var ft = file.type;
             if (ft.length >= 6 &&
@@ -383,62 +377,69 @@ function handleEvent(event) {
                 parentNode.insertBefore(editTargetEl, elAfter);
             }
         }
-        files.length = 0;
-        ensureStillEditTargetAtEndOfFunc    = true;
-        sendRequestToSaveHTMLDocAtEndOfFunc = true;;
+        files = null;
+        sendRequestToSaveHTMLDocAtEndOfFunc = true;
+    } else if (event.type === "input" && event.target === editTargetEl) {
+        sendRequestToSaveHTMLDocAtEndOfFunc = true;
     } else if (event.type == "readystatechange" &&
         event.target instanceof XMLHttpRequest
     ) {
         /** @type {XMLHttpRequest} **/
-        var request = event.target;
+        request = event.target;
         if (request.readyState === XMLHttpRequest.DONE) {
             if (request.status === 201) {
-                console.info("Successfully saved the HTML Document to the server.");
+                console.info(
+                    "Successfully saved the HTML Document to the server.");
             } else {
-                console.error("Failed to save the HTML Document to the server.");
+                console.error(
+                    "Failed to save the HTML Document to the server.");
             }
         }
-    }
-
-    if (ensureStillEditTargetAtEndOfFunc) {
-        if (editTargetEl === DUMMY_EL) {
-            if (!mainEl) { return false; }
-            if (!mainEl.firstElementChild || (
-                mainEl.firstElementChild.nodeName !== "H1" &&
-                mainEl.firstElementChild.nodeName !== "P"  &&
-                mainEl.firstElementChild.nodeName !== "IMG"
-            )) {
-                editTargetEl = document.createElement("H1");
-                editTargetEl.insertBefore(
-                    document.createTextNode("Heading 1."), null);
-                mainEl.insertBefore(editTargetEl, null);
-            } else {
-                editTargetEl = mainEl.firstElementChild;
-            }
-        }
-        editTargetEl.setAttribute("contenteditable", "");
-        editTargetEl.focus();
-        editTargetEl.parentNode
-            .insertBefore(editControls, editTargetEl.nextElementSibling);
     }
 
     if (sendRequestToSaveHTMLDocAtEndOfFunc) {
-        editTargetEl.removeAttribute("contenteditable");
+        if (prevEditTarget !== null && prevEditTarget !== DUMMY_EL)
+            { prevEditTarget.removeAttribute("contenteditable"); }
 
-        var tempHtmlDoc = document.implementation.createHTMLDocument();
-        var htmlElClone = tempHtmlDoc.importNode(document.documentElement, true);
-        tempHtmlDoc.removeChild(tempHtmlDoc.documentElement);
-        tempHtmlDoc.insertBefore(htmlElClone, null);
-        tempHtmlDoc.body.removeAttribute("style");
-        tempHtmlDoc.getElementById("file-tree"    ).remove();
-        tempHtmlDoc.getElementById("edit-controls").remove();
+        var headElClone = tempHtmlDoc.importNode(document.head, true);
+        var mainElClone = tempHtmlDoc.importNode(
+            document.body.lastElementChild, true);
+        tempHtmlDoc.documentElement.removeChild(tempHtmlDoc.head);
+        if (tempHtmlDoc.body.firstElementChild) {
+            tempHtmlDoc.body.removeChild(tempHtmlDoc.body.firstElementChild);
+        }
 
-        var request = new XMLHttpRequest();
-        request.addEventListener("readystatechange", handleEvent);
+        tempHtmlDoc.documentElement.insertBefore(headElClone, tempHtmlDoc.body);
+        tempHtmlDoc.body.insertBefore(mainElClone, null);
+
+        var elToRemove = tempHtmlDoc.getElementById("edit-controls");
+        elToRemove.parentNode.removeChild(elToRemove);
+
         request.open("PUT", document.URL);
         request.send(tempHtmlDoc);
 
+        if (editTargetEl === prevEditTarget)
+            { editTargetEl.setAttribute("contenteditable", ""); }
+    }
+
+    if (editTargetEl !== prevEditTarget) {
+        if (prevEditTarget !== null && prevEditTarget !== DUMMY_EL &&
+            !sendRequestToSaveHTMLDocAtEndOfFunc
+        ) { prevEditTarget.removeAttribute("contenteditable"); }
+        if (editTargetEl === null || editTargetEl === DUMMY_EL) {
+            if (mainEl.firstElementChild !== editControls)
+                { editTargetEl = mainEl.firstElementChild; }
+        }
+        if (editTargetEl === null) {
+            editTargetEl = document.createElement("h1");
+            editTargetEl.insertBefore(
+                document.createTextNode("Heading 1."), null);
+            mainEl.insertBefore(editTargetEl, null);
+        }
+        editTargetEl.parentNode
+            .insertBefore(editControls, editTargetEl.nextSibling);
         editTargetEl.setAttribute("contenteditable", "");
+        editTargetEl.focus();
     }
 }
 
@@ -448,4 +449,5 @@ window.addEventListener("touchstart"       , handleEvent);
 window.addEventListener("mousedown"        , handleEvent);
 window.addEventListener("input"            , handleEvent);
 fileUploadInputEl.addEventListener("change", handleEvent);
+request.addEventListener("readystatechange", handleEvent);
 

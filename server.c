@@ -518,6 +518,7 @@ int main(void) {
                                file_path, file_fd);
                     int len = write(file_fd, http_request, http_request_len);
                     if (len != http_request_len) {
+                        fds_state[file_fd] = 0;
                         close(file_fd);
                         debug(IO, "Closed file with descriptor %d.", file_fd);
 
@@ -546,6 +547,7 @@ int main(void) {
                             scratch_buf  + http_request_read_size
                         ) || len >= http_content_length
                     ) {
+                        fds_state[file_fd] = 0;
                         close(file_fd);
                         debug(IO, "Closed file with descriptor %d.", file_fd);
                         debug(IO, "'write' Completed overwriting "
@@ -587,6 +589,7 @@ int main(void) {
 
                 int len = copy_file_range(fd, 0, file_fd, 0, read_size, 0);
                 if (len == -1) {
+                    fds_state[file_fd] = 0;
                     close(file_fd);
                     debug(IO, "Closed file with descriptor %d.", file_fd);
 
@@ -623,6 +626,7 @@ int main(void) {
                         //       situations such as these!
                     }
 
+                    fds_state[file_fd] = 0;
                     close(file_fd);
                     debug(IO, "Closed file with descriptor %d.", file_fd);
                     debug(IO, "'copy_file_range' Completed overwriting "
@@ -662,6 +666,7 @@ int main(void) {
                         sendfile(fd, file_fd,
                                  0, fds_state[file_fd] & FILE_SIZE);
                     if (len == -1) {
+                        fds_state[file_fd] = 0;
                         close(file_fd);
                         debug(IO, "Closed file with descriptor %d.", file_fd);
 
@@ -679,6 +684,7 @@ int main(void) {
                               "from file with descriptor %d "
                               "to client socket %d.", len, file_fd, fd);
                     if (((fds_state[file_fd] -= len) & FILE_SIZE) <= 0) {
+                        fds_state[file_fd] = 0;
                         close(file_fd);
                         debug(IO, "'sendfile' Completed sending full file "
                                   "from file with descriptor %d "
@@ -699,6 +705,7 @@ int main(void) {
                         "HTTP/1.1 200 OK\r\n"
                         "Content-Type: %s\r\n"
                         "Content-Length: %d\r\n"
+                        "Connection: close\r\n"
                         "\r\n",
                         mime_type_strings[mime_type],
                         file_size);
@@ -714,6 +721,7 @@ int main(void) {
                 "HTTP/1.1 500 Internal Server Error\r\n"
                 "Content-Type: text/html\r\n"
                 "Content-Length: 75\r\n"
+                "Connection: close\r\n"
                 "\r\n"
                 "<!DOCTYPE HTML>"
                 "<html><body>"
@@ -727,6 +735,7 @@ int main(void) {
                 "HTTP/1.1 403 Forbidden\r\n"
                 "Content-Type: text/html\r\n"
                 "Content-Length: 63\r\n"
+                "Connection: close\r\n"
                 "\r\n"
                 "<!DOCTYPE HTML>"
                 "<html><body>"
@@ -740,6 +749,7 @@ int main(void) {
                 "HTTP/1.1 404 Not Found\r\n"
                 "Content-Type: text/html\r\n"
                 "Content-Length: 63\r\n"
+                "Connection: close\r\n"
                 "\r\n"
                 "<!DOCTYPE HTML>"
                 "<html><body>"
@@ -753,6 +763,7 @@ int main(void) {
                 "HTTP/1.1 201 Created\r\n"
                 "Content-Type: text/html\r\n"
                 "Content-Length: 63\r\n"
+                "Connection: close\r\n"
                 "\r\n"
                 "<!DOCTYPE HTML>"
                 "<html><body>"
