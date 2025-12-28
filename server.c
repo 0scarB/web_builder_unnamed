@@ -19,7 +19,7 @@
 #   define ASSERT_IN_PATH_PARSING 0
 #endif
 #ifndef DEBUG_HTTP_REQUEST_PARSING
-#   define DEBUG_HTTP_REQUEST_PARSING 0
+#   define DEBUG_HTTP_REQUEST_PARSING 1
 #endif
 #ifndef DEBUG_MIME_TYPES
 #   define DEBUG_MIME_TYPES 0
@@ -53,6 +53,9 @@ int info_log_fd = 1, error_log_fd = 2;
 #define error(fmt, ...) log(1, "ERROR:", fmt, ##__VA_ARGS__)
 #define debug(what, fmt, ...) \
     (DEBUG_##what ? log(0, "DEBUG_"#what":", fmt, ##__VA_ARGS__) : 0)
+/* Use this to output messages for print-debugging that should visually
+ * stand-out from the rest of the log-output. */
+#define scream(fmt, ...) log(1, "", "!!!!! "fmt" !!!!!", ##__VA_ARGS__)
 
 #define not_implemented(...) \
     (log(1, "", "NOT IMPLEMENTED! " __VA_ARGS__) && (_exit(errno), -1))
@@ -91,8 +94,9 @@ long syscall_ret;
 //
 // Parsing File-Paths from HTTP-Requests
 //
-#define GET 1
-#define PUT 2
+#define GET  1
+#define PUT  2
+#define POST 3
 
 int parse_http_request_method(char** request, int* request_len) {
     char* r = *request; int l = *request_len;
@@ -103,6 +107,12 @@ int parse_http_request_method(char** request, int* request_len) {
     if (l >= 4 && r[0] == 'P' && r[1] == 'U' && r[2] == 'T' && r[3] == ' ') {
         *request += 4; *request_len -= 4;
         return PUT;
+    }
+    if (l >= 5 &&
+        r[0] == 'P' && r[1] == 'O' && r[2] == 'S' && r[3] == 'T' && r[4] == ' '
+    ) {
+        *request += 5; *request_len -= 5;
+        return POST;
     }
     return -1;
 }
@@ -258,6 +268,7 @@ enum mime_type {
     TEXT_HTML,
     TEXT_JAVASCRIPT,
     TEXT_CSS,
+    IMAGE_MIME_TYPE = 0x10,
     IMAGE_JPEG,
     IMAGE_PNG,
     IMAGE_SVG,
@@ -354,6 +365,274 @@ const struct sockaddr server_addr = {AF_INET, {
 #define MAX_CLIENTS 256
 #define MAX_FDS     512
 
+#define MIN(a, b) ((a) > (b) ? (b) : (a))
+
+unsigned char INVALID_PTR__DONT_CRASH_ON_ACCESS[4096] = {0};
+char request[1024];
+
+void handle_client_poll_event(
+    struct pollfd* pollfds, unsigned int* files_state_array, int fd
+) {
+    struct pollfd pollfd     =           pollfds[fd];
+    unsigned int  file_state = files_state_array[fd];
+
+    if (pollfd.revents & POLLIN) {
+        int   http_method         = -1;
+        char* http_method_str     = (char*)INVALID_PTR__DONT_CRASH_ON_ACCESS;
+        int   http_method_str_len = -1;
+        char* http_request_path     = (char*)INVALID_PTR__DONT_CRASH_ON_ACCESS;
+        int   http_request_path_len = -1;
+        char  http_major_version = 0;
+        char  http_minor_version = 0;
+        int   http_headers__content_length = -1;
+        _Bool http_headers__not_fully_parsed__more_in_next_packet = (_Bool)0;
+        char* http_request_body__1st_chunk_in_initial_packet =
+            (char*)INVALID_PTR__DONT_CRASH_ON_ACCESS;
+        int   http_request_body__1st_chunk_in_initial_packet_size = -1;
+
+        int i = 0;
+
+        // Read 1st Request Chunk
+        //
+        //  The code operates under the assumption that it is large enough to
+        //  contain the full HTTP-method, HTTP-path and relevant HTTP-headers
+        //
+        int request_bytes_count = read(fd, request, sizeof(request)-1);
+        if (request_bytes_count < -1) {
+            error_errno("'read' from client socket failed!");
+            close(fd);
+            return;
+        }
+        int request_size = MIN(request_bytes_count, sizeof(request)-1);
+        request[request_size     ] = '\0';
+        request[sizeof(request)-1] = '\0';
+
+        info("Request:\n%.*s", request_size, request);
+
+        // Parse HTTP-Request Method
+        http_method_str = request + i;
+        const int _GET  = 0;
+        const int _PUT  = 1;
+        const int _POST = 2;
+        if (i + 3 < request_size &&
+            request[i+0] == 'G' && request[i+1] == 'E' &&
+            request[i+2] == 'T' && request[i+3] == ' '
+        ) {
+            http_method = _GET;
+            i += 4;
+        } else if (i + 3 < request_size &&
+            request[i+0] == 'P' && request[i+1] == 'U' &&
+            request[i+2] == 'T' && request[i+3] == ' '
+        ) {
+            http_method = _PUT;
+            i += 4;
+        } else if (i + 4 < request_size &&
+            request[i+0] == 'P' && request[i+1] == '0' && request[i+2] == 'S' &&
+            request[i+3] == 'T' && request[i+4] == ' '
+        ) {
+            http_method = _POST;
+            i += 5;
+        } else {
+            for (; i < request_size && request[i] != ' '; ++i);
+            if (i != request_size)
+                { http_method_str_len = (request + i) - http_method_str; }
+        }
+
+        // Parse HTTP-Request Path
+        http_request_path = request + i;
+        for (char c; i < request_size && (c = request[i]) && (
+                ('a' <= c && c <= 'z') ||
+                ('A' <= c && c <= 'Z') ||
+                ('0' <= c && c <= '9') ||
+                c == '/' || c == '.' || c == '-' || c == '_')
+             ;++i);
+        if (request[i] != ' ' && request[i] != '\r')
+            { goto end_of_request_parsing; }
+        http_request_path_len = (request + i) - http_request_path;
+        // NOTE: This modifies the request, which may come as an unexpected
+        //       side-effect. We don't loose much information because we're
+        //       overwriting a space character (see path-ending condition above)
+        request[i++] = '\0';
+        for (;i < request_size &&
+                (request[i] == ' ' || request[i] == '\r' || request[i] == '\n')
+             ;++i);
+
+        // Parse "HTTP/X[.Y]" Substring
+        if (i + 5 < request_size &&
+            request[i+0] == 'H' && request[i+1] == 'T' &&
+            request[i+2] == 'T' && request[i+3] == 'P' &&
+            request[i+4] == '/' &&
+            '0' <= request[i+5] && request[i+5] <= '9'
+        ) {
+            i += 6;
+            http_major_version = request[i-1];
+            if (http_major_version == '0') {
+                warn("Got HTTP-Request with major version '0', e.g. 'HTTP/0.9'. "
+                     "This code is untested with this HTTP-version and many not "
+                     "work!");
+            } else if (http_major_version == '1') {
+                // Expected case: No warnings
+            } else if (http_major_version == '2' || http_major_version == '3') {
+                warn("Got HTTP-Request with major version '%c'. "
+                     "This code is untested with HTTP-versions above 1.1 "
+                     "and may not work!", http_major_version);
+            } else if (http_major_version > '3' && http_major_version <= '9') {
+                warn("Got HTTP-Request with major version '%c'. "
+                     "This code was written before this HTTP-version existed "
+                     "and may not work!", http_major_version);
+            } else {
+                warn("Got invalid HTTP-Request-major-version '%c'!",
+                        http_major_version);
+                --i;
+                http_major_version = 0;
+            }
+
+            if (i + 1 < request_size &&
+                request[i+0] == '.' &&
+                '0' <= request[i+1] && request[i+1] <= '9'
+            ) {
+                i += 2;
+                http_minor_version = request[i-1];
+            } else if ('0' <= http_major_version && http_major_version <= '1') {
+                warn("HTTP-%c-Request missing HTTP-protocol-minor-version "
+                     "Y in 'HTTP/%c.Y' (protocol/version) substring!",
+                     http_major_version, http_major_version);
+                // TODO: Check in RFCs, for HTTP/0.9, HTTP/1.0 and HTTP/1.1,
+                //       whether omission of the minor-version is actually
+                //       allowed (and should not trigger a warning in this code)
+            }
+
+            for (;i < request_size && (request[i] == ' '  ||
+                                       request[i] == '\r' || request[i] == '\n')
+                 ;++i);
+        } else {
+            warn("HTTP-Request missing 'HTTP/X[.Y]' "
+                 "(protocol/version) substring!");
+        }
+
+        // Parse HTTP-Request Headers
+        unsigned int sliding_window = 0;
+        _Static_assert(sizeof(unsigned int) == 4,
+            "'unsigned int' type has wrong size to be used for sliding window!");
+        _Static_assert(
+            (((unsigned int)0xFFFFFFFF) << 8) == (unsigned int)0xFFFFFF00,
+            "'unsigned int' type has incorrect left-shift behavior to be used "
+            "for sliding window!");
+        const unsigned int END_OF_HEADERS =
+            (((unsigned int)'\r') << 24) | (((unsigned int)'\n') << 16) |
+            (((unsigned int)'\r') <<  8) |  ((unsigned int)'\n');
+        const unsigned int CONTENT_LENGTH_HEADER_START =
+            (((unsigned int)'C') << 24) | (((unsigned int)'o') << 16) |
+            (((unsigned int)'n') <<  8) |  ((unsigned int)'t');
+        // TODO: Check in HTTP RFCs, whether 'content-length' with lowercase 'c'
+        //       is also valid and/or some browser-clients send a lowercase 'c'
+        for (;i < request_size && sliding_window != END_OF_HEADERS
+             ;sliding_window =
+                (sliding_window << 8) | (unsigned int)(request[i++])
+        ) {
+            if (sliding_window == CONTENT_LENGTH_HEADER_START &&
+                i + 9 < request_size &&
+                request[i+0] == 'e' && request[i+1] == 'n' &&
+                request[i+2] == 't' && request[i+3] == '-' &&
+                request[i+4] == 'L' && request[i+5] == 'e' &&
+                request[i+6] == 'n' && request[i+7] == 'g' &&
+                request[i+8] == 't' && request[i+9] == 'h'
+            ) {
+                i += 10;
+                for (;i < request_size && request[i] == ' '; ++i);
+                if (i >= request_size) { break; }
+                if (request[i] != ':') {
+                    warn("Did not get ':' after 'Content-Length' "
+                         "HTTP-header name... "
+                         "Skipping 'Content-Length' header!");
+                    continue;
+                }
+                ++i;
+                for (;i < request_size && request[i] == ' '; ++i);
+                if (i >= request_size) { break; }
+                if (!('0' <= request[i] && request[i] <= '9')) {
+                    warn("HTTP-header-value XXX in 'Content-Length: XXX' "
+                         "is not an integer... "
+                         "Skipping 'Content-Length' header!");
+                    continue;
+                }
+                http_headers__content_length =
+                    (unsigned int)(request[i++] - '0');
+                for (char c; i < request_size && (c = request[i]) &&
+                        '0' <= c && c <= '9'
+                    ;++i, http_headers__content_length =
+                            10*http_headers__content_length
+                            + (unsigned int)(c - '0'));
+            }
+        }
+        if (sliding_window != END_OF_HEADERS) {
+            http_headers__not_fully_parsed__more_in_next_packet = (_Bool)1;
+            warn("All HTTP-Headers did not fully fit into the 1st packet "
+                 "(chunk read). This is NOT taken into consideration when "
+                 "handling the next, subsequent packet. This may lead to "
+                 "bugs!");
+        }
+
+        // Set variable values relating to the HTTP-Body's 1st chunk,
+        // at the end of this request's 1st chunk, read into buffer, in above code
+        if (!http_headers__not_fully_parsed__more_in_next_packet) {
+            http_request_body__1st_chunk_in_initial_packet      = request + i;
+            http_request_body__1st_chunk_in_initial_packet_size =
+                request_size - i;
+        }
+
+    end_of_request_parsing:
+
+        switch (http_method) {
+            case _GET : debug(HTTP_REQUEST_PARSING, "HTTP-Method: GET" ); break;
+            case _PUT : debug(HTTP_REQUEST_PARSING, "HTTP-Method: PUT" ); break;
+            case _POST: debug(HTTP_REQUEST_PARSING, "HTTP-Method: POST"); break;
+            default:
+                if (http_method_str_len == -1) {
+                    warn("Invalid, unterminated HTTP-Method '%.*s...'!",
+                            3, http_method_str);
+                } else {
+                    warn("Unhandled HTTP-Method '%.*s'!",
+                            http_method_str_len, http_method_str);
+                }
+                break;
+        }
+        if (http_request_path_len == -1) {
+            warn("Could not parse HTTP-Request-Path '%.*s...'!",
+                    100, http_request_path);
+        } else {
+            debug(HTTP_REQUEST_PARSING, "HTTP-Request-Path: %s",
+                    http_request_path);
+        }
+        if (http_major_version) {
+            if (http_minor_version) {
+                debug(HTTP_REQUEST_PARSING, "HTTP-Version: %c.%c",
+                        http_major_version, http_minor_version);
+            } else {
+                debug(HTTP_REQUEST_PARSING, "HTTP-Version: %c",
+                        http_major_version);
+            }
+        }
+        if (!http_headers__not_fully_parsed__more_in_next_packet) {
+            if (http_request_body__1st_chunk_in_initial_packet_size < 100) {
+                debug(HTTP_REQUEST_PARSING,
+                      "HTTP-Body 1st chunk at end of packet: '%.*s'",
+                      http_request_body__1st_chunk_in_initial_packet_size,
+                      http_request_body__1st_chunk_in_initial_packet);
+            } else {
+                debug(HTTP_REQUEST_PARSING,
+                      "HTTP-Body 1st chunk at end of packet: '%.*s'",
+                      100,
+                      http_request_body__1st_chunk_in_initial_packet);
+            }
+        }
+        if (http_headers__content_length != -1) {
+            debug(HTTP_REQUEST_PARSING, "HTTP 'Content-Length' Header Value: %d",
+                    http_headers__content_length);
+        }
+    }
+}
+
 int main(void) {
     // Preallocate memory
     const int on = 1;
@@ -401,6 +680,8 @@ int main(void) {
                 pollfds[client_sock].fd = client_sock;
                 continue;
             }
+
+            handle_client_poll_event(pollfds, fds_state, fd);
 
             int fd_state = fds_state[fd];
 
@@ -467,10 +748,6 @@ int main(void) {
                         continue;
                     }
 
-                    int file_fd = open(file_path, O_RDONLY, 0400);
-                    debug(IO, "Opened file '%s'. File descriptor is %d.",
-                               file_path, file_fd);
-
                     enum mime_type mime_type =
                         get_mime_type_from_file_extension(
                             file_path, file_path_len);
@@ -481,6 +758,9 @@ int main(void) {
                           mime_type_strings[mime_type], (int)mime_type);
                     info("Serving file '%s'.", file_path);
 
+                    int file_fd = open(file_path, O_RDONLY, 0400);
+                    debug(IO, "Opened file '%s'. File descriptor is %d.",
+                               file_path, file_fd);
                     fds_state[fd] = file_fd;
                     fds_state[file_fd] =
                         (file_stat.st_size & FILE_SIZE) |
@@ -518,6 +798,8 @@ int main(void) {
                                file_path, file_fd);
                     int len = write(file_fd, http_request, http_request_len);
                     if (len != http_request_len) {
+                        shutdown(fd, SHUT_RD);
+
                         fds_state[file_fd] = 0;
                         close(file_fd);
                         debug(IO, "Closed file with descriptor %d.", file_fd);
@@ -547,6 +829,7 @@ int main(void) {
                             scratch_buf  + http_request_read_size
                         ) || len >= http_content_length
                     ) {
+                        shutdown(fd, SHUT_RD);
                         fds_state[file_fd] = 0;
                         close(file_fd);
                         debug(IO, "Closed file with descriptor %d.", file_fd);
@@ -567,6 +850,95 @@ int main(void) {
                         fds_state[file_fd] =
                             (http_content_length - len) & FILE_SIZE;
                     }
+                    continue;
+                } else if (http_request_method == POST) {
+                    enum mime_type mime_type =
+                        get_mime_type_from_file_extension(
+                            file_path, file_path_len);
+                    debug(MIME_TYPES,
+                          "Determined file '%.*s' to have MIME-type '%s'"
+                          "(with index %d in mime_type_strings)",
+                          file_path_len, file_path,
+                          mime_type_strings[mime_type], (int)mime_type);
+                    if (!(mime_type & IMAGE_MIME_TYPE)) {
+                        warn("File '%s' has an invalid MIME-type to be created by a "
+                             "HTTP-POST request. Expected an image MIME-type!",
+                             file_path);
+                        shutdown(fd, SHUT_RD);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
+                    }
+
+                    int http_content_length =
+                        parse_only_content_length_from_http_headers(
+                            &http_request, &http_request_len);
+                    debug(HTTP_REQUEST_PARSING, "http_content_length = %d",
+                                                 http_content_length);
+
+                    int file_fd = open(file_path, O_CREAT|O_WRONLY, 0600);
+                    debug(IO, "Opened file '%s'. File descriptor is %d.",
+                               file_path, file_fd);
+                    int len = write(file_fd, http_request, http_request_len);
+                    if (len != http_request_len) {
+                        shutdown(fd, SHUT_RD);
+
+                        fds_state[file_fd] = 0;
+                        close(file_fd);
+                        debug(IO, "Closed file with descriptor %d.", file_fd);
+
+                        if (errno == EACCES) {
+                            warn("Access denied to file with descriptor %d.",
+                                 file_fd);
+                            pollfds  [fd].events = POLLOUT;
+                            fds_state[fd]        =
+                                SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
+                        } else {
+                            error_errno("'write' to file with descriptor %d "
+                                        "failed unexpectedly", file_fd);
+                            pollfds  [fd].events = POLLOUT;
+                            fds_state[fd]        =
+                                SEND_HTTP_ERROR_RESPONSE_INTERNAL_SERVER_ERROR;
+                        }
+                        continue;
+                    }
+
+                    info("Saving edited file '%s'.", file_path);
+
+                    debug(IO, "'write' Wrote chunk of size %d "
+                              "to file with descriptor %d.", len, file_fd);
+                    if ((http_content_length == -1 &&
+                            http_request + len <
+                            scratch_buf  + http_request_read_size
+                        ) || len >= http_content_length
+                    ) {
+                        shutdown(fd, SHUT_RD);
+                        fds_state[file_fd] = 0;
+                        close(file_fd);
+                        debug(IO, "Closed file with descriptor %d.", file_fd);
+                        debug(IO, "'write' Completed overwriting "
+                                  "file with descriptor %d "
+                                  "from content received on client socket %d.",
+                                  file_fd, fd);
+                        pollfds  [fd].events = POLLOUT;
+                        fds_state[fd]        =
+                            SEND_HTTP_SUCCESS_RESPONSE_CREATED;
+                        continue;
+                    }
+
+                    fds_state[fd] = file_fd;
+                    if (http_content_length == -1) {
+                        fds_state[file_fd] = NO_HTTP_CONTENT_LENGTH_HEADER;
+                    } else {
+                        fds_state[file_fd] =
+                            (http_content_length - len) & FILE_SIZE;
+                    }
+                    continue;
+                } else {
+                    shutdown(fd, SHUT_RD);
+                    error("Unexpected case in HTTP-request handling!");
+                    pollfds  [fd].events = POLLOUT;
+                    fds_state[fd]        = SEND_HTTP_ERROR_RESPONSE_FORBIDDEN;
                     continue;
                 }
             }
@@ -589,6 +961,7 @@ int main(void) {
 
                 int len = copy_file_range(fd, 0, file_fd, 0, read_size, 0);
                 if (len == -1) {
+                    shutdown(fd, SHUT_RD);
                     fds_state[file_fd] = 0;
                     close(file_fd);
                     debug(IO, "Closed file with descriptor %d.", file_fd);
