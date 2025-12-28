@@ -75,8 +75,8 @@ editControls.insertBefore(editToggleItalic       , null);
 editControls.insertBefore(editToggleBold         , null);
 editControls.insertBefore(editToggleUnderline    , null);
 editControls.insertBefore(editToggleStrikethrough, null);
-editControls.insertBefore(editSwapWithElBefore  , null);
-editControls.insertBefore(editSwapWithElAfter   , null);
+editControls.insertBefore(editSwapWithElBefore   , null);
+editControls.insertBefore(editSwapWithElAfter    , null);
 editControls.insertBefore(editDelete             , null);
 editControls.insertBefore(editAddHeading1After   , null);
 editControls.insertBefore(editAddParagraphAfter  , null);
@@ -367,18 +367,26 @@ function handleEvent(event) {
         var parentNode = editTargetEl.parentNode;
         for (var i = 0; i < files.length; ++i) {
             var file = files[i];
+            console.log(file);
+
             var ft = file.type;
-            if (ft.length >= 6 &&
-                ft[0] === 'i' && ft[1] === 'm' && ft[2] === 'a' &&
-                ft[3] === 'g' && ft[4] === 'e' && ft[5] === '/'
-            ) {
-                editTargetEl = document.createElement("img");
-                editTargetEl.src = URL.createObjectURL(file);
-                parentNode.insertBefore(editTargetEl, elAfter);
-            }
+            if (ft.length < 6 &&
+                ft[0] !== 'i' || ft[1] !== 'm' || ft[2] !== 'a' ||
+                ft[3] !== 'g' || ft[4] !== 'e' || ft[5] !== '/'
+            ) { continue; }
+
+            var saveImageToURL = window.location.origin + "/images/" + file.name;
+            request.open("POST", saveImageToURL);
+            request.send(file);
+
+            editTargetEl = document.createElement("img");
+            setTimeout(() => {
+                editTargetEl.src = saveImageToURL;
+            }, 1000);
+            //editTargetEl.src = URL.createObjectURL(file);
+            parentNode.insertBefore(editTargetEl, elAfter);
         }
         files = null;
-        sendRequestToSaveHTMLDocAtEndOfFunc = true;
     } else if (event.type === "input" && event.target === editTargetEl) {
         sendRequestToSaveHTMLDocAtEndOfFunc = true;
     } else if (event.type == "readystatechange" &&
