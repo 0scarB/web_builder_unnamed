@@ -1,0 +1,95 @@
+
+        establish connection 
+                |
+                v
+        parse HTTP request
+                |
+   +------------+------------+
+   |            |            |
+   v            v            v
+  GET         POST          PUT
+download     update  create/overwrite
+  file        file         file 
+   |            |            |
+   v            |            |
+ copy from      |            |
+file to socket  |            |
+   |            v            |
+   +----------->+<-----------+
+                |
+          HTTP response
+                |
+                v
+         close connection
+
+TMP_BUF[1024]
+
+while poll(sockets)
+    for socket in sockets
+        poll_event = socket.poll_event
+        if socket is server_socket
+            if poll_event == POLLIN
+                connection = accept(server_socket)
+                start polling connection
+            continue
+
+        tmp_buf      =      TMP_BUF
+        tmp_buf_size = size(TMP_BUF)
+
+        if connection.state == IS_NEW && poll_event == POLLIN
+            parse http
+            if http.method == GET
+                connection.file  = open_sync(http.path)
+                connection.state = SEND_HTTP_HEAD
+            if http.method == POST
+                if not exists(http.path)
+                    http_response = HTTP/1.1 404\r\n
+                                    ...
+                                    Content-Type: ...\r\n
+                                    \r\n
+                                    ERROR: Not Found)
+                    write(connection, http_response, size(http_response))
+                    close(connection)
+                    continue
+                connection.file      = open_sync(http.path)
+                connection.recv_file = open_sync(http.path + ".new")
+                connection.state     = RECV_NEW_FILE_CONTENT
+            if http.method == POST
+                connection.file = open_sync(http.path)
+                if exists(http.path)
+                    connection.recv_file = open_sync(http.path + ".new")
+                else
+                    connection.recv_file = connection.file
+                connection.state = RECV_NEW_FILE_CONTENT
+
+        if connection.state == SEND_HTTP_HEAD && poll_event == POLLOUT
+            http_head = HTTP/1.1 200\r\n
+                        ...
+                        Content-Type: ...\r\n
+                        Content-Length: stat(connection.file).size\r\n
+            copy(temp_buf <- http_head)
+            tmp_buf      += len(http_head)
+            tmp_buf_size -= len(http_head)
+            connection.state                      = SEND_HTTP_BODY
+            connection.bytes_remaining_to_be_sent = stat(connection.file).size
+
+        if connection.state == SEND_HTTP_BODY && poll_event == POLLOUT
+            read_size  = read_sync(connection.file, tmp_buf, tmp_buf_size)
+            write_size =     write(connection, tmp_buf, read_size)
+            if write_size < read_size
+                seek(connection.file, read_size - write_size, SEEK_CUR)
+            connection.bytes_remaining_to_be_sent -= write_size
+            if connection.bytes_remaining_to_be_sent <= 0
+                close(connection)
+                close(connection.file)
+
+        if connection.state == RECV_NEW_FILE_CONTENT
+            read_size = read(connection, tmp_buf, tmp_buf_size)
+            if read_size == 0
+                close(connection)
+                if connection.recv_file != connection.file:
+                    link(connection.recv_file, connection.file)
+                close(connection.file)
+                close(connection.recv_file)
+            write_sync(connection.recv_file, tmp_buf, read_size)
+

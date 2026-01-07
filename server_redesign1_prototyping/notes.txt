@@ -1,0 +1,99 @@
+Desired server functionality:
+- Nonblocking I/O -> switch between handling of mutliple connected clients as
+  I/O-events occur
+- Handle client requests to:
+    - Get HTML pages
+    - Get images
+    - Get the sitemap
+- Handle editor requests to:
+    - Update HTML pages
+    - Create HTML pages, editing the sitemap accordingly
+    - Delete HTML pages, editing the sitemap accordingly
+    - Rename HTML pages within the same directory, editing the sitemap accordingly
+    - Move HTML pages to a different directory, editing the sitemap accordingly
+    - Create directories, editing the sitemap accordingly
+    - Delete directories, editing the sitemap accordingly
+- Authenticate editors and authorize edits 
+
+Handling context switching between multiple clients, to avail of nonblocking I/O:
+- Relevant data must be persisted between context switches
+    - we want to keep presistent data minimal and dense for the standard reasons:
+        1. cache-misses massively increase processing time
+        2. small data can be handled by simple preallocation of buffers with
+           adequate size, whereas large amounts of persistent data often requires
+           complicated allocation and reallocation mechanisms
+- Peristent data can be tagged with a "state", allowing code to be structured
+  as a state-machine
+    -> this is probably a good place to start for the initial design pass, but
+       states should be able to be inferred based on the persisted data in many
+       cases, as the design is refined, making a tag variable redundant
+- Some psuedocodecode:
+
+    if persistent_data.state == NEW_CONNECTION && POLLIN:
+        parse HTTP-request's start-line and headers
+
+        if http_method == GET:
+            close receive-side of connection
+                (we don't need any data from the from the HTTP-request body)
+
+            file_path = file_path_from_http_path(http_path)
+
+            if not file_exists(file_path):
+                persistent_data.state = SEND_HTTP_ERROR_404_NOT_FOUND
+                goto end
+            
+            if not access_authorized(file_path):
+               persistent_datastate = SEND_HTTP_ERROR_403_FORBIDDEN
+                goto end
+
+            persistent_data.fd             = open_nonblocking(file_path)
+            persistent_data.file_extension = determine_file_extension(file_path)
+            persistent_data.file_size      = stat(file_path).size
+            if persistent_data.file_extension == "html":
+                persistent_data.state = SEND_HTTP_RESPONSE_START_BEFORE_HTML_BODY
+            if persistent_data.file_extension is image file extension:
+                persistent_data.state = SEND_HTTP_RESPONSE_START_BEFORE_IMAGE_BODY
+
+            map persistent_data.fd -> connection
+
+    if persistent_data.state == SEND_HTTP_RESPONSE_START_BEFORE_HTML_BODY && POLLOUT:
+        send(HTTP/1.1 200 OK\r\n
+             Content-Type: text/html\r\n
+             Content-Length: ${persistent_data.file_size}\r\n
+             \r\n)
+
+    if persistent_data.state == SEND_HTTP_RESPONSE_START_BEFORE_IMAGE_BODY && POLLOUT:
+        send(HTTP/1.1 200 OK\r\n
+             Content-Type: image/${persistent_data.file_extension}\r\n
+             Content-Length: ${persistent_data.file_size}\r\n
+             \r\n)
+
+    if (persistent_data.state == SEND_HTTP_RESPONSE_START_BEFORE_HTML_BODY ||
+        persistent_data.state == SEND_HTTP_RESPONSE_START_BEFORE_IMAGE_BODY
+    ) && POLLOUT:
+        presistent_data.copy_from_file_to_http_response_buffer =
+            aquire_tmp_buffer_from_pool()
+
+        start polling file persistent_data.fd for POLLOUT
+        temporarily stop polling connection for POLLOUT
+
+        persistent_data.state = SEND_HTTP_RESPONSE_BODY_FROM_FILE
+
+    if POLLOUT on file fd:
+        read_size =
+            read(persistent_data.fd,
+                 presistent_data.copy_from_file_to_http_response_buffer,
+                 TMP_BUFFER_SIZE)
+
+        if read_size == 0:
+            connection
+
+        presistent_data.copy_from_file_to_http_response_buffer_len = read_size
+
+        temporarily stop polling file persistent_data.fd for POLLOUT
+         stop polling connection for POLLOUT
+
+    if state == SEND_HTTP_RESPONSE_BODY_FROM_FILE && POLLOUT:
+
+    end
+
